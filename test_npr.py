@@ -3,26 +3,34 @@ import numpy as np
 import scipy as sp
 import unittest
 
-from os import path
+import os
+import npr as NPR
 
-import npr
+IMG_SRC_FOLDER = "images/source"
 
-IMG_FOLDER = "images/source"
+def get_images(folder_name):
+    images = {}
+    for file in os.listdir(os.path.join(IMG_SRC_FOLDER, folder_name)):
+        image = cv2.imread(os.path.join(IMG_SRC_FOLDER, folder_name, file))
+        name = file.split(".")[0]
+        images[name] = image
+    return images
 
 class NprTest(unittest.TestCase):
 
     def setUp(self):
-        images = [cv2.imread(path.join(IMG_FOLDER, "sample-00.png")),
-                  cv2.imread(path.join(IMG_FOLDER, "sample-01.png")),
-                  cv2.imread(path.join(IMG_FOLDER, "sample-02.png")),
-                  cv2.imread(path.join(IMG_FOLDER, "sample-03.png")),
-                  cv2.imread(path.join(IMG_FOLDER, "sample-04.png")),
-                  cv2.imread(path.join(IMG_FOLDER, "sample-05.png"))]
-
-        if not all([im is not None for im in images]):
-            raise IOError("Error, one or more sample images not found.")
+        images = {
+            'engine': get_images('engine'),
+            'flower': get_images('flower'),
+            'my_flower': get_images('my_flower')
+        }
 
         self.images = images
+
+    def test_depth_edge_detection(self):
+        npr = NPR.Npr(self.images['my_flower'])
+        dde = npr.detect_depth_edges()
+        self.assertTrue(dde)
 
 if __name__ == '__main__':
     unittest.main()
