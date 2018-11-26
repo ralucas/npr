@@ -335,5 +335,7 @@ class Npr:
         cv2.imwrite(os.path.join(self.test_folder, 'b.jpg'), b)
         return b
 
+    # TODO: Make this more of a pipeline
+    # As well as in which intermediate images are created
     def run(self):
-        self.detect_depth_edges()
+        self.colorize()

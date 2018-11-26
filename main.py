@@ -22,7 +22,7 @@ def get_images(folder_name):
 
 def run(name):
     images = get_images(name)
-    n = npr.Npr(images)
+    n = npr.Npr(images, name=name)
     n.run()
 
 if __name__ == "__main__":
