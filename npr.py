@@ -111,6 +111,7 @@ class Npr:
             edge_mask = s_edge + edge_mask
             edge_mask[edge_mask >= 1.] = 1
             cv2.imwrite(os.path.join(self.test_folder, 'edges.jpg'), edge_mask * 255.)
+        cv2.imwrite(os.path.join(self.test_folder, 'edge_mask.jpg'), edge_mask * 255.)
         return edge_mask
 
     def render_edges(self):
@@ -280,13 +281,33 @@ class Npr:
         # TODO: Create distance ratio mask
         return gamma_mask
 
+    # Defining a texture pixel as a non-edge pixel
+    # that still shows a gradient
+    def get_texture_pixels(self, max_gray, edges):
+        texture_mask = np.zeros(max_gray.shape)
+        sobel_y = cv2.Sobel(max_gray, cv2.CV_64F, 0, 1, ksize=3)
+        sobel_x = cv2.Sobel(max_gray, cv2.CV_64F, 1, 0, ksize=3)
+        abs_sobel_y = cv2.convertScaleAbs(sobel_y)
+        abs_sobel_x = cv2.convertScaleAbs(sobel_x)
+        sobel = cv2.addWeighted(abs_sobel_x, 0.5, abs_sobel_y, 0.5, 0)
+        cv2.imwrite(os.path.join(self.test_folder, 'max_gray_sobel.jpg'), sobel)
+        texture_mask[(sobel < 100.) & (sobel > 35)] = 1.
+        texture_mask[edges == 1.] = 0.
+        cv2.imwrite(os.path.join(self.test_folder, 'texture_mask.jpg'), texture_mask * 255.)
+        return texture_mask
+
     # Ratio of the distance field of texture pixels
     # by the distance field of depth edge pixels.
     # The distance field value at a pixel is the
     # Euclidean distance to the nearest (texture
     # or depth) edge pixel.
-    def distance_ratio(self):
-        return NotImplementedError
+    def distance_ratio(self, gamma_mask, texture_mask):
+        dist_mask = gamma_mask + texture_mask
+        dist_mask[dist_mask > 1.] = 1.
+        dist = np.zeros(dist_mask.shape)
+        for i in xrange(dist.shape[0]):
+            for j in xrange(dist.shape[1]):
+                
 
     def create_attentuation_map(self):
         r_edges, edges, signed = self.render_edges2()
@@ -308,10 +329,13 @@ class Npr:
     def colorize(self):
         # mask = self.create_mask_image()
         r_edges, edges, signed = self.render_edges2()
-        max_color, _ = self.get_max_imgs()
+        max_color, max_gray = self.get_max_imgs()
+
         b = np.copy(max_color)
         # intensity_grad = max_color - cv2.GaussianBlur(b, (5,5), 0)
         # cv2.imwrite(os.path.join(self.test_folder, 'ig.jpg'), intensity_grad)
+
+        ## Build Gamma mask
         sobel_y = cv2.Sobel(max_color, cv2.CV_64F, 0, 1, ksize=3)
         sobel_x = cv2.Sobel(max_color, cv2.CV_64F, 1, 0, ksize=3)
         abs_sobel_y = cv2.convertScaleAbs(sobel_y)
@@ -320,6 +344,10 @@ class Npr:
         cv2.imwrite(os.path.join(self.test_folder, 'color_grad.jpg'), sobel)
         gamma = np.zeros(sobel.shape)
         gamma[edges == 0.] = 1.
+        texture_mask = self.get_texture_pixels(max_gray, edges)
+        dist = self.distance_ratio(gamma, texture_mask)
+        alpha_texture = texture_mask * self.alpha
+
         G = np.power(sobel, gamma)
         I_prime = np.abs(max_color - G)
         cv2.imwrite(os.path.join(self.test_folder, 'iprime.jpg'), I_prime)
@@ -329,8 +357,8 @@ class Npr:
         I[edges == 1.] = 0.
         cv2.imwrite(os.path.join(self.test_folder, 'colorized.jpg'), I)
 
-        for i in range(50):
-            b = cv2.GaussianBlur(b, (3,3), 0)
+        for i in range(2):
+            b = cv2.GaussianBlur(b, (13, 13), 0)
         b[edges == 1.] = 0.
         cv2.imwrite(os.path.join(self.test_folder, 'b.jpg'), b)
         return b
