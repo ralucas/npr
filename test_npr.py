@@ -49,7 +49,7 @@ class NprTest(unittest.TestCase):
         self.assertTrue(cam)
 
     def test_colorize(self):
-        n = 'bone'
+        n = 'wine'
         npr = NPR.Npr(self.images[n], n)
         cam = npr.colorize()
         self.assertTrue(cam)

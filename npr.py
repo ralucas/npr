@@ -4,12 +4,19 @@ import scipy as sp
 import cv2
 import random
 import os
+import scipy.fftpack as fftpack
+import scipy.sparse.linalg as lg
+from tempfile import mkdtemp
+e_dat = os.path.join(mkdtemp(), 'e.dat')
+t_dat = os.path.join(mkdtemp(), 't.dat')
 
 IMG_TEST_FOLDER = "images/output/test/"
 
+MAX_SIZE = 200
+
 class Npr:
-    def __init__(self, images, name="", alpha=1.0):
-        self.alpha = alpha
+    def __init__(self, images, name="", alphas=[0.0, 0.25, 0.5, 0.75, 1.0]):
+        self.alphas = alphas
         self.name = name
         self.test_folder = IMG_TEST_FOLDER + name
         try:
@@ -32,50 +39,53 @@ class Npr:
             np.multiply(self.gray_imgs[i], np.divide(self.mean, self.means[i]))
             for i in range(self.gray_imgs.shape[0])
         ])
-        # cv2.imwrite(os.path.join(self.test_folder, 'max_255.jpg'), np.ones(self.gray_imgs[0].shape)*255.)
-        # cv2.imwrite(os.path.join(self.test_folder, 'max_0.jpg'), np.zeros(self.gray_imgs[0].shape))
+        self.max_color, self.max_gray = self.get_max_imgs()
 
     def get_max_imgs(self):
         max_color = np.max(self.images, axis=0)
         max_gray = np.max(self.gray_imgs, axis=0)
         max_gray[max_gray <= 0.] = 1.
-        cv2.imwrite(os.path.join(self.test_folder, 'max_color.jpg'), max_color)
-        cv2.imwrite(os.path.join(self.test_folder, 'max_gray.jpg'), max_gray)
+        # cv2.imwrite(os.path.join(self.test_folder, 'max_color.jpg'), max_color)
+        # cv2.imwrite(os.path.join(self.test_folder, 'max_gray.jpg'), max_gray)
         return max_color, max_gray
 
     def get_ratio_imgs(self):
-        self.max_color, self.max_gray = self.get_max_imgs()
-        ratios = self.gray_imgs / self.max_gray
-        for i, r in enumerate(ratios):
-            cv2.imwrite(os.path.join(self.test_folder, 'ratio-{}.jpg'.format(self.img_names[i])), r * 255.)
+        median_gray = np.median(self.gray_imgs, axis=0)
+        median_gray[median_gray <= 0.] = 1.
+        ratios_max = self.gray_imgs / self.max_gray
+        ratios_spec = self.gray_imgs / median_gray
+        ratios_spec[ratios_spec > 1.] = 1.
+        m = np.argmin([np.sum(ratios_max), np.sum(ratios_spec)])
+        if m == 0:
+            ratios = ratios_max
+        else:
+            ratios = ratios_spec
+        # sum_ratios = np.sum(ratios, axis=0)
+        # sum_ratios[sum_ratios > 1.] = 1.
+        # cv2.imwrite(os.path.join(self.test_folder, 'sum_ratios.jpg'), sum_ratios * 255.)
+        # for i, r in enumerate(ratios):
+        #     cv2.imwrite(os.path.join(self.test_folder, 'ratio-{}.jpg'.format(self.img_names[i])), r * 255.)
         return ratios
 
-    # TODO: 1. Handle Specularities with Gaussian Gradient
-    def detect_depth_edges(self):
-        self.ratios = self.get_ratio_imgs()
+    def detect_depth_edges(self, ratio_imgs):
         sobels = []
         lapls = []
         sobel_operator = np.array([[1, 2, 1], [0, 0, 0], [-1, -2, -1]])
-        for i, ratio in enumerate(self.ratios):
+        for i, ratio in enumerate(ratio_imgs):
             if self.img_names[i] == "up" or self.img_names[i] == "down":
-                sobel = cv2.filter2D(ratio, cv2.CV_64F, sobel_operator)
-                sobelY = cv2.Sobel(ratio, cv2.CV_64F, 0, 1, ksize=3)
-                # sobel = cv2.convertScaleAbs(sobelY)
-                # sobel = cv2.addWeighted(abs_sobel_x, 0.5, abs_sobel_y, 0.5, 0)
+                sobelY = cv2.filter2D(ratio, cv2.CV_64F, sobel_operator)
+                sobels.append(sobelY)
             else:
-                sobel = cv2.filter2D(ratio, cv2.CV_64F, sobel_operator.T)
-                sobelX = cv2.Sobel(ratio, cv2.CV_64F, 1, 0, ksize=3)
-                # sobel = cv2.convertScaleAbs(sobelX)
-                # sobel = cv2.addWeighted(abs_sobel_x, 0.5, abs_sobel_y, 0.5, 0)
-            sobels.append(sobel)
+                sobelX = cv2.filter2D(ratio, cv2.CV_64F, sobel_operator.T)
+                sobels.append(sobelX)
             lapl_op = np.array([[0,1,0],[1,-4,1],[0,1,0]])
             lapl = cv2.filter2D(ratio, cv2.CV_64F, lapl_op)
             lapls.append(lapl)
 
-        all_lapls = np.max(lapls, axis=0)
-        cv2.imwrite(os.path.join(self.test_folder, 'laplaces.jpg'), all_lapls*255)
-        all_sobels = np.max(sobels, axis=0)
-        cv2.imwrite(os.path.join(self.test_folder, 'sobels.jpg'), all_sobels*255)
+        # all_lapls = np.max(lapls, axis=0)
+        # cv2.imwrite(os.path.join(self.test_folder, 'laplaces.jpg'), all_lapls*255)
+        # all_sobels = np.max(sobels, axis=0)
+        # cv2.imwrite(os.path.join(self.test_folder, 'sobels.jpg'), all_sobels*255)
 
         silhouettes = []
         for i, edge in enumerate(sobels):
@@ -88,67 +98,24 @@ class Npr:
                 silhouette = np.abs(edge * edge_mask)
             silhouettes.append(silhouette)
         silhouettes = np.float64(silhouettes)
-        self.edge_map = np.max(silhouettes, axis=0)
-        cv2.imwrite(os.path.join(self.test_folder, 'edge_map.jpg'), self.edge_map*255)
-        low_thresh = 0.5
-        hi_thresh = 1.0
+        # edge_map = np.max(silhouettes, axis=0)
+        # cv2.imwrite(os.path.join(self.test_folder, 'edge_map.jpg'), edge_map*255)
         edge_mask = np.zeros(silhouettes[0].shape)
 
         for s in silhouettes:
-            cv2.imwrite(os.path.join(self.test_folder, 'sil.jpg'), s * 255.)
-            # lapl_op = np.array([[0, 1, 0], [1, -4, 1], [0, 1, 0]])
-            # lapl = cv2.filter2D(s, cv2.CV_64F, lapl_op)
-            # cv2.imwrite(os.path.join(self.test_folder, 'lapl.jpg'), lapl * 255.)
-            # kernel = cv2.getGaussianKernel(3, 1, cv2.CV_64F)
-            # gauss = cv2.filter2D(s, cv2.CV_64F, kernel)
-            gauss = cv2.GaussianBlur(s, (3, 3), 0)
-            cv2.imwrite(os.path.join(self.test_folder, 'gauss.jpg'), gauss * 255.)
+            # cv2.imwrite(os.path.join(self.test_folder, 'sil.jpg'), s * 255.)
+            # gauss = cv2.GaussianBlur(s, (3, 3), 0)
+            # cv2.imwrite(os.path.join(self.test_folder, 'gauss.jpg'), gauss * 255.)
             kernel = cv2.getGaussianKernel(5, -1, cv2.CV_64F)
             sep = cv2.sepFilter2D(s, cv2.CV_64F, kernel, kernel)
-            cv2.imwrite(os.path.join(self.test_folder, 'sep.jpg'), sep*255.)
+            # cv2.imwrite(os.path.join(self.test_folder, 'sep.jpg'), sep*255.)
             s_edge = np.zeros(s.shape)
-            s_edge[sep > 0.5] = 1.
+            s_edge[sep > 0.4] = 1.
             edge_mask = s_edge + edge_mask
             edge_mask[edge_mask >= 1.] = 1
-            cv2.imwrite(os.path.join(self.test_folder, 'edges.jpg'), edge_mask * 255.)
-        cv2.imwrite(os.path.join(self.test_folder, 'edge_mask.jpg'), edge_mask * 255.)
+            # cv2.imwrite(os.path.join(self.test_folder, 'edges.jpg'), edge_mask * 255.)
+        # cv2.imwrite(os.path.join(self.test_folder, 'edge_mask.jpg'), edge_mask * 255.)
         return edge_mask
-
-    def render_edges(self):
-        self.edge_mask = self.detect_depth_edges()
-        signed = np.ones(self.edge_mask.shape, dtype=np.float64) * 0.5
-        signed[self.edge_mask == 1.] = 0.
-        cv2.imwrite(os.path.join(self.test_folder, 'signed1.jpg'), signed * 255.)
-        w = np.where(self.edge_mask == 1.)
-        f = 0.
-        t = 1.
-        for i, ratio in enumerate(self.ratios):
-            if self.img_names[i] == 'up' or self.img_names[i] == 'down':
-                wu = w[0] - 1, w[1]
-                wu[0][wu[0] < 0] = 0
-                wd = w[0] + 1, w[1]
-                wd[0][wd[0] > signed.shape[0]-1] = signed.shape[0]-1
-                gu = np.greater(ratio[wu], ratio[wd])
-                gu[gu == False] = f
-                gu[gu == True] = t
-                signed[wu] = gu
-                gu[gu == f] = t
-                gu[gu == t] = f
-                signed[wd] = gu
-            else:
-                wl = w[0], w[1] - 1
-                wl[1][wl[1] < 0] = 0
-                wr = w[0], w[1] + 1
-                wr[1][wr[1] > signed.shape[1]-1] = signed.shape[1]-1
-                gu = np.greater(ratio[wl], ratio[wr])
-                gu[gu == False] = f
-                gu[gu == True] = t
-                signed[wl] = gu
-                gu[gu == f] = t
-                gu[gu == t] = f
-                signed[wr] = gu
-        cv2.imwrite(os.path.join(self.test_folder, 'signed2.jpg'), signed * 255.)
-        return signed
 
     def handle_edge_assign(self, r, c, signed, scores, score, dir, n_att):
         dirs = {
@@ -209,16 +176,14 @@ class Npr:
                 scores[r, c-d['c']:c+d['c']] = score
         return signed, scores
 
-    def render_edges2(self):
-        self.ratios = self.get_ratio_imgs()
-        edges = self.detect_depth_edges()
+    def render_signed_edges(self, ratio_imgs, edges):
         signed = np.ones(edges.shape, dtype=np.float64) * 0.5
         signed[edges == 1.] = 0.
         thresh = -0.15
-        r_edges = np.zeros(self.ratios[0].shape)
+        r_edges = np.zeros(ratio_imgs[0].shape)
         n_att = 6
         scores = np.zeros(signed.shape)
-        for i, ratio in enumerate(self.ratios):
+        for i, ratio in enumerate(ratio_imgs):
             if self.img_names[i] == 'up':
                 # start from bottom work up
                 for r in xrange(ratio.shape[0]-n_att, n_att, -1):
@@ -257,19 +222,19 @@ class Npr:
                                 signed, scores = self.handle_edge_assign(r, c, signed, scores, score, self.img_names[i], n_att)
             signed[edges == 1.] = 0.
             if self.img_names[i] == 'left' or self.img_names[i] == 'right':
-                bs = cv2.GaussianBlur(signed, (3,3), sigmaX=-1, sigmaY=0)
+                bs = cv2.GaussianBlur(signed, (3,3), sigmaX=1, sigmaY=0)
             else:
-                bs = cv2.GaussianBlur(signed, (3,3), sigmaX=0, sigmaY=-1)
-            cv2.imwrite(os.path.join(self.test_folder, 'bs.jpg'), bs * 255.)
+                bs = cv2.GaussianBlur(signed, (3,3), sigmaX=0, sigmaY=1)
+            # cv2.imwrite(os.path.join(self.test_folder, 'bs.jpg'), bs * 255.)
             signed[edges == 1.] = 0.
             signed[bs >= 0.51] = 1.
-            cv2.imwrite(os.path.join(self.test_folder, 'signed4.jpg'), signed * 255.)
-            cv2.imwrite(os.path.join(self.test_folder, 'r_edges2.jpg'), r_edges*255.)
+            # cv2.imwrite(os.path.join(self.test_folder, 'signed4.jpg'), signed * 255.)
+            # cv2.imwrite(os.path.join(self.test_folder, 'r_edges2.jpg'), r_edges*255.)
 
         r_img = np.copy(r_edges)
         r_img[r_img > 1.] = 1.
-        cv2.imwrite(os.path.join(self.test_folder, 'signed3.jpg'), signed * 255.)
-        cv2.imwrite(os.path.join(self.test_folder, 'r_edges.jpg'), r_img*255.)
+        # cv2.imwrite(os.path.join(self.test_folder, 'signed3.jpg'), signed * 255.)
+        # cv2.imwrite(os.path.join(self.test_folder, 'r_edges.jpg'), r_img*255.)
         return r_edges, edges, signed
 
     def create_mask_image(self):
@@ -290,80 +255,353 @@ class Npr:
         abs_sobel_y = cv2.convertScaleAbs(sobel_y)
         abs_sobel_x = cv2.convertScaleAbs(sobel_x)
         sobel = cv2.addWeighted(abs_sobel_x, 0.5, abs_sobel_y, 0.5, 0)
-        cv2.imwrite(os.path.join(self.test_folder, 'max_gray_sobel.jpg'), sobel)
-        texture_mask[(sobel < 100.) & (sobel > 35)] = 1.
-        texture_mask[edges == 1.] = 0.
-        cv2.imwrite(os.path.join(self.test_folder, 'texture_mask.jpg'), texture_mask * 255.)
-        return texture_mask
+        # cv2.imwrite(os.path.join(self.test_folder, 'max_gray_sobel.jpg'), sobel)
+        texture_mask[sobel > 20] = 1.
+        # ed = cv2.boxFilter(edges, -1, (9, 9))
+        # ed[ed > 0.] = 1.
+        # texture_mask[ed == 1.] = 0.
+        # cv2.imwrite(os.path.join(self.test_folder, 'texture_mask.jpg'), texture_mask * 255.)
+        canny = cv2.Canny(np.uint8(max_gray), 0, 250)
+        # cv2.imwrite(os.path.join(self.test_folder, 'canny.jpg'), canny)
+        return texture_mask, canny
 
     # Ratio of the distance field of texture pixels
     # by the distance field of depth edge pixels.
     # The distance field value at a pixel is the
     # Euclidean distance to the nearest (texture
     # or depth) edge pixel.
-    def distance_ratio(self, gamma_mask, texture_mask):
-        dist_mask = gamma_mask + texture_mask
-        dist_mask[dist_mask > 1.] = 1.
-        dist = np.zeros(dist_mask.shape)
-        for i in xrange(dist.shape[0]):
-            for j in xrange(dist.shape[1]):
-                
+    def distance_ratio(self, f, edges, textures):
+        featureless_pyr = self.reduce(f)
+        edge_pyr = self.reduce(edges)
+        texture_pyr = self.reduce(textures)
+        idx = len(featureless_pyr) - 1
+        for i, fp in enumerate(featureless_pyr):
+            if np.sum(np.array(fp.shape) - MAX_SIZE) < 0:
+                idx = i
+                break
+        f1 = featureless_pyr[idx]
+        edge_mask = edge_pyr[idx]
+        texture_mask = texture_pyr[idx]
+        # cv2.imwrite(os.path.join(self.test_folder, 'f1.jpg'), f1*255.)
+        featureless = np.array(np.where(f1 == 0.)).T
+        edge_dist = np.zeros(edge_mask.shape)
+        edgew = np.where(edge_mask > 0.)
+        ew = np.array(edgew).T
+        texture_dist = np.zeros(texture_mask.shape)
+        texturew = np.where(texture_mask > 0.)
+        tw = np.array(texturew).T
+        lf = len(featureless)
+        es = np.subtract(ew, featureless[:, np.newaxis])
+        ts = np.subtract(tw, featureless[:, np.newaxis])
+        e_euc = np.min(np.sqrt(np.sum(np.square(es), axis=2)), axis=1)
+        t_euc = np.min(np.sqrt(np.sum(np.square(ts), axis=2)), axis=1)
+        for i in xrange(lf):
+            pt = featureless[i]
+            edge_dist[pt[0]][pt[1]] = e_euc[i]
+            texture_dist[pt[0]][pt[1]] = t_euc[i]
 
-    def create_attentuation_map(self):
-        r_edges, edges, signed = self.render_edges2()
+        edge_dist = self.expand(edge_dist)[idx]
+        text_dist = self.expand(texture_dist)[idx]
+        edge_dist[edge_dist == 0.] = 1.
+        dist_ratio = text_dist / edge_dist
+        dist_ratio[edges == 1.] = 0.
+        dist_ratio[textures == 1.] = 0.
+        return dist_ratio
+
+    def create_attentuation_map(self, r_edges, edges, signed):
         edges_m = np.zeros(edges.shape)
         edges_m[edges == 0.] = 1.
-        kernel = cv2.getGaussianKernel(50, -1, cv2.CV_64F)
+        kernel = cv2.getGaussianKernel(13, -1, cv2.CV_64F)
         sep = cv2.sepFilter2D(edges_m * 255., cv2.CV_64F, kernel, kernel)
-        cv2.imwrite(os.path.join(self.test_folder, 'sep_cam.jpg'), sep)
+        # cv2.imwrite(os.path.join(self.test_folder, 'sep_cam.jpg'), sep)
         d = cv2.filter2D(edges_m*255., -1, kernel)
-        cv2.imwrite(os.path.join(self.test_folder, 'd_cam.jpg'), d)
+        # cv2.imwrite(os.path.join(self.test_folder, 'd_cam.jpg'), d)
         gb = cv2.GaussianBlur(edges_m*255., (5,5), -1)
-        cv2.imwrite(os.path.join(self.test_folder, 'gb_cam.jpg'), gb)
-
+        # cv2.imwrite(os.path.join(self.test_folder, 'gb_cam.jpg'), gb)
         return d
 
-    def create_attenuated_image(self):
-        return NotImplementedError
-
-    def colorize(self):
-        # mask = self.create_mask_image()
-        r_edges, edges, signed = self.render_edges2()
-        max_color, max_gray = self.get_max_imgs()
-
-        b = np.copy(max_color)
-        # intensity_grad = max_color - cv2.GaussianBlur(b, (5,5), 0)
-        # cv2.imwrite(os.path.join(self.test_folder, 'ig.jpg'), intensity_grad)
+    def colorize(self, r_edges, edges, signed):
+        max_color = np.copy(self.max_color)
+        max_gray = np.copy(self.max_gray)
+        b = np.copy(self.max_color)
 
         ## Build Gamma mask
         sobel_y = cv2.Sobel(max_color, cv2.CV_64F, 0, 1, ksize=3)
         sobel_x = cv2.Sobel(max_color, cv2.CV_64F, 1, 0, ksize=3)
         abs_sobel_y = cv2.convertScaleAbs(sobel_y)
         abs_sobel_x = cv2.convertScaleAbs(sobel_x)
-        sobel = cv2.addWeighted(abs_sobel_x, 0.5, abs_sobel_y, 0.5, 0)
-        cv2.imwrite(os.path.join(self.test_folder, 'color_grad.jpg'), sobel)
-        gamma = np.zeros(sobel.shape)
-        gamma[edges == 0.] = 1.
-        texture_mask = self.get_texture_pixels(max_gray, edges)
-        dist = self.distance_ratio(gamma, texture_mask)
-        alpha_texture = texture_mask * self.alpha
+        color_grad = cv2.addWeighted(abs_sobel_x, 0.5, abs_sobel_y, 0.5, 0)
+        # cv2.imwrite(os.path.join(self.test_folder, 'color_grad.jpg'), color_grad)
 
-        G = np.power(sobel, gamma)
-        I_prime = np.abs(max_color - G)
-        cv2.imwrite(os.path.join(self.test_folder, 'iprime.jpg'), I_prime)
-        I_norm = cv2.normalize(I_prime,None, alpha=0, beta=1, norm_type=cv2.NORM_MINMAX, dtype=cv2.CV_64F)
-        I = np.copy(I_norm) * 255.
-        cv2.imwrite(os.path.join(self.test_folder, 'inorm.jpg'), I)
-        I[edges == 1.] = 0.
-        cv2.imwrite(os.path.join(self.test_folder, 'colorized.jpg'), I)
+        texture_mask, canny = self.get_texture_pixels(max_gray, edges)
+        f = np.zeros(texture_mask.shape)
+        f[texture_mask != 0.] = 1.
+        text_dist = cv2.distanceTransform(np.uint8(f), cv2.cv.CV_DIST_L2, cv2.cv.CV_DIST_MASK_PRECISE)
+        f = np.zeros(texture_mask.shape)
+        f[edges != 0.] = 1.
+        edge_dist = cv2.distanceTransform(np.uint8(f), cv2.cv.CV_DIST_L2, cv2.cv.CV_DIST_MASK_PRECISE)
+        edge_dist[edge_dist == 0.] = 1.
+        dist_ratio = text_dist / edge_dist
+        colorized_imgs = []
+        # X = self.poisson_solver(max_gray, max_gray)
+        # cv2.imwrite(os.path.join(self.test_folder, 'X.jpg'), X * 255.)
+        for alpha in self.alphas:
+            gamma = np.zeros(color_grad.shape)
+            distw = np.where(dist_ratio != 0.)
+            for i in xrange(len(distw[0])):
+                gamma[distw[0][i], distw[1][i], :] = dist_ratio[distw[0][i]][distw[1][i]] * alpha
+            gamma[texture_mask == 1.] = alpha
+            gamma[edges == 1.] = 1.
+            G = np.power(color_grad, gamma)
+            I_prime = np.abs(color_grad - G)
+            # cv2.imwrite(os.path.join(self.test_folder, 'iprime_{}.jpg'.format(alpha)), I_prime)
+            # a = I_prime / np.average(I_prime, axis=2)[:, :, np.newaxis]
+            s = max_color - I_prime
+            # cv2.imwrite(os.path.join(self.test_folder, 'iprime2_{}.jpg'.format(alpha)), s)
+            I_norm = cv2.normalize(s, None, alpha=50, beta=200, norm_type=cv2.NORM_MINMAX, dtype=cv2.CV_64F)
+            I = np.copy(I_norm-20.)
+            # cv2.imwrite(os.path.join(self.test_folder, 'inorm_{}.jpg'.format(alpha)), I_norm)
+            I[edges == 1.] = 0.
+            # cv2.imwrite(os.path.join(self.test_folder, 'colorized_{}.jpg'.format(alpha)), I)
+            colorized_imgs.append(I)
 
+        mean_shift = self.segment(max_color)
+        mean_shift[edges == 1.] = 0.
+        # cv2.imwrite(os.path.join(self.test_folder, 'mean_shift.jpg'), mean_shift)
         for i in range(2):
             b = cv2.GaussianBlur(b, (13, 13), 0)
         b[edges == 1.] = 0.
-        cv2.imwrite(os.path.join(self.test_folder, 'b.jpg'), b)
-        return b
+        # cv2.imwrite(os.path.join(self.test_folder, 'b.jpg'), b)
+        return colorized_imgs, mean_shift, b
 
-    # TODO: Make this more of a pipeline
-    # As well as in which intermediate images are created
+    def poisson_solver(self, G, I):
+        div_G = cv2.Laplacian(G, cv2.CV_64F, borderType=cv2.BORDER_REFLECT_101)
+        G_pyr = self.reduce(div_G)
+        dst_pyr = self.reduce(I)
+        idx = len(G_pyr) - 1
+        for i, fp in enumerate(G_pyr):
+            if np.sum(np.array(fp.shape) - MAX_SIZE) < 0:
+                idx = i
+                break
+        h, w = G_pyr[idx].shape
+        M = (np.eye(h*w, h*w) * 4) + (np.eye(h*w, h*w, k=1)*-1) + (np.eye(h*w, h*w, k=-1)*-1)
+        b = np.zeros(h*w)
+        count = 0
+        H = h - 1
+        W = w - 1
+        for r in xrange(0, H):
+            for c in xrange(0, W):
+                i = ((r-1) * H) + c
+                if r == 0:
+                    b[count] = b[count] + dst_pyr[idx][r+1][c-1]
+                if r == H:
+                    b[count] = b[count] + dst_pyr[idx][r+1][c]
+
+                if c == 0:
+                    b[count] = b[count] + dst_pyr[idx][r][c-1]
+                if c == W:
+                    b[count] = b[count] + dst_pyr[idx][r][c+1]
+
+                xv = c - 1
+                yv = r - 1
+
+                v = G_pyr[idx][yv][xv]
+                b[count] = b[count] + v
+                count += 1
+
+        X = lg.bicg(M, b.T)
+        im = np.reshape(X[0], (h, w))
+        dst = self.expand(im)[idx]
+        return np.abs(dst[:G.shape[0], :G.shape[1]])
+
+    def handle_specularities(self):
+        intensity_grads = []
+        max_color, max_gray = self.get_max_imgs()
+        for img in self.images:
+            sobel_y = cv2.Sobel(img, cv2.CV_64F, 0, 1, ksize=3)
+            sobel_x = cv2.Sobel(img, cv2.CV_64F, 1, 0, ksize=3)
+            abs_sobel_y = cv2.convertScaleAbs(sobel_y)
+            abs_sobel_x = cv2.convertScaleAbs(sobel_x)
+            grad = cv2.addWeighted(abs_sobel_x, 0.5, abs_sobel_y, 0.5, 0)
+            intensity_grads.append(grad)
+        int_grays = []
+        for img in self.gray_imgs:
+            sobel_y = cv2.Sobel(img, cv2.CV_64F, 0, 1, ksize=3)
+            sobel_x = cv2.Sobel(img, cv2.CV_64F, 1, 0, ksize=3)
+            abs_sobel_y = cv2.convertScaleAbs(sobel_y)
+            abs_sobel_x = cv2.convertScaleAbs(sobel_x)
+            grad = cv2.addWeighted(abs_sobel_x, 0.5, abs_sobel_y, 0.5, 0)
+            int_grays.append(grad)
+        med = np.median(np.array(intensity_grads, dtype=np.float64), axis=0)
+        med_gray = np.median(np.array(int_grays, dtype=np.float64), axis=0)
+        # cv2.imwrite(os.path.join(self.test_folder, 'med.jpg'), med)
+        # cv2.imwrite(os.path.join(self.test_folder, 'med_gray.jpg'), med)
+
+        # lapl = cv2.Laplacian(max_gray, cv2.CV_64F, borderType=cv2.BORDER_REFLECT_101)
+        # cv2.imwrite(os.path.join(self.test_folder, 'lapl_spec.jpg'), lapl)
+        # dst = fftpack.dst(lapl)
+        # dst_t = fftpack.dst(dst.T)
+        # xv, yv = np.meshgrid(np.arange(med.shape[0]), np.arange(med.shape[1]))
+        # d = (2 * np.cos(np.divide(np.pi * xv, med.shape[0]-1))) + (2 * np.cos(np.divide(np.pi * yv, med.shape[1]-1)))
+        # f = dst_t / d
+        # idst = fftpack.idst(f)
+        # img_idst = fftpack.idst(idst.T)
+        # cv2.imwrite(os.path.join(self.test_folder, 'idst.jpg'), img_idst)
+
+        recon = np.abs(np.subtract(max_color, med))
+        # cv2.imwrite(os.path.join(self.test_folder, 'recon.jpg'), recon)
+        recon_gray = cv2.cvtColor(np.uint8(recon), cv2.COLOR_BGR2GRAY)
+        recon_gray[recon_gray <= 0.] = 1.
+        med_mask = np.zeros(med_gray.shape)
+        med_mask[med_gray > 100] = 1.
+        # cv2.imwrite(os.path.join(self.test_folder, 'med_mask.jpg'), med_mask * 255.)
+        # cv2.imwrite(os.path.join(self.test_folder, 'med_g1.jpg'), np.median(self.gray_imgs, axis=0))
+        gp = self.gauss_pyr(max_gray, np.median(self.gray_imgs, axis=0), med_mask)
+        # cv2.imwrite(os.path.join(self.test_folder, 'gp.jpg'), gp)
+        return recon, recon_gray, gp
+
+    def gauss_pyr(self, img1, img2, mask):
+        r = 3
+        I1 = img1.copy()
+        I2 = img2.copy()
+        m = mask.copy()
+        gp1 = [I1]
+        gp2 = [I2]
+        gp_mask = [mask]
+        for i in xrange(r):
+            I1 = cv2.pyrDown(I1)
+            I2 = cv2.pyrDown(I2)
+            m = cv2.pyrDown(m)
+            m[m > 0.] = 1.
+            gp1.append(I1)
+            gp2.append(I2)
+            gp_mask.append(m)
+
+        gp_mask.reverse()
+
+        lp1 = [gp1[r-1]]
+        lp2 = [gp2[r-1]]
+        for i in xrange(r-1, 0, -1):
+            GE1 = cv2.pyrUp(gp1[i])
+            GE2 = cv2.pyrUp(gp2[i])
+            h, w = gp1[i-1].shape
+            GE1 = GE1[:h, :w]
+            GE2 = GE2[:h, :w]
+            L1 = np.subtract(gp2[i - 1], GE1)
+            L2 = np.subtract(gp1[i - 1], GE2)
+            lp1.append(L1)
+            lp2.append(L2)
+
+        o = []
+        for i in xrange(r):
+            f1 = lp1[i].copy()
+            f2 = lp2[i].copy()
+            f1[gp_mask[i+1] == 1.] = 0.
+            f2[gp_mask[i+1] == 0.] = 0.
+            ff = f1 + f2
+            o.append(ff)
+
+        out = o[0]
+        for i in xrange(1, r):
+            out = cv2.pyrUp(out)
+            h, w = o[i].shape
+            out = out[:h, :w] + o[i]
+        return out
+
+    def gauss_pyr_c(self, img1, img2, mask):
+        r = 3
+        I1 = img1.copy()
+        I2 = img2.copy()
+        m = mask.copy()
+        gp1 = [I1]
+        gp2 = [I2]
+        gp_mask = [mask]
+        for i in xrange(r):
+            I1 = cv2.pyrDown(I1)
+            I2 = cv2.pyrDown(I2)
+            m = cv2.pyrDown(m)
+            m[m > 0.] = 1.
+            gp1.append(I1)
+            gp2.append(I2)
+            gp_mask.append(m)
+
+        gp_mask.reverse()
+
+        lp1 = [gp1[r-1]]
+        lp2 = [gp2[r-1]]
+        for i in xrange(r-1, 0, -1):
+            GE1 = cv2.pyrUp(gp1[i])
+            GE2 = cv2.pyrUp(gp2[i])
+            h, w, _ = gp1[i-1].shape
+            GE1 = GE1[:h, :w, :]
+            GE2 = GE2[:h, :w, :]
+            L1 = np.subtract(gp2[i - 1], GE1)
+            L2 = np.subtract(gp1[i - 1], GE2)
+            lp1.append(L1)
+            lp2.append(L2)
+
+        o = []
+        for i in xrange(r):
+            f1 = lp1[i].copy()
+            f2 = lp2[i].copy()
+            f1[gp_mask[i+1] == 1.] = 0.
+            f2[gp_mask[i+1] == 0.] = 0.
+            ff = f1 + f2
+            o.append(ff)
+
+        out = o[0]
+        for i in xrange(1, r):
+            out = cv2.pyrUp(out)
+            h, w, _ = o[i].shape
+            out = out[:h, :w, :] + o[i]
+        return out
+
+    def reduce(self, img):
+        i_c = img.copy()
+        out = [i_c]
+        for i in xrange(6):
+            i_c = cv2.pyrDown(i_c)
+            out.append(i_c)
+        return out
+
+    def expand(self, img):
+        i_c = img.copy()
+        out = [i_c]
+        for i in xrange(6):
+            i_c = cv2.pyrUp(i_c)
+            out.append(i_c)
+        return out
+
+    def segment(self, img):
+        p = cv2.pyrMeanShiftFiltering(np.uint8(img), 10, 20, 5)
+        return p
+
+
     def run(self):
-        self.colorize()
+        results = {}
+
+        # Get Ratio Images
+        ratio_imgs = self.get_ratio_imgs()
+        for i, r in enumerate(ratio_imgs):
+            n = 'ratio-{}.jpg'.format(self.img_names[i])
+            results[n] = r * 255.
+
+        # Get Depth Edges
+        edge_mask = self.detect_depth_edges(ratio_imgs)
+        results['edges'] = edge_mask * 255.
+
+        # Get Signed Edges
+        ratio_edges, _, signed_edges = self.render_signed_edges(ratio_imgs, edge_mask)
+        results['ratio_edges'] = ratio_edges * 255.
+        results['signed_edges'] = signed_edges * 255.
+
+        # Colorize
+        colorized_imgs, mean, b = self.colorize(ratio_edges, edge_mask, signed_edges)
+
+        for i, c in enumerate(colorized_imgs):
+            n = 'colorized_{}'.format(self.alphas[i])
+            results[n] = c
+        results['colorized_mean_filtered'] = mean
+        results['colorized_blurred'] = b
+
+        return results

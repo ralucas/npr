@@ -22,8 +22,15 @@ def get_images(folder_name):
 
 def run(name):
     images = get_images(name)
+    try:
+        os.mkdir(os.path.join(IMG_OUT_FOLDER, name))
+    except:
+        print "dir exists"
     n = npr.Npr(images, name=name)
-    n.run()
+    results = n.run()
+    for k, v in results.items():
+        file = k + '.jpg'
+        cv2.imwrite(os.path.join(IMG_OUT_FOLDER, name, file), v)
 
 if __name__ == "__main__":
     dir = sys.argv[1]
